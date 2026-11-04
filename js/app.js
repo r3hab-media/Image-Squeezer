@@ -145,9 +145,9 @@ function say(text) {
 function outputName(original, kind) {
   const base = original.replace(/\.[^.]*$/, '') || 'image';
   const ext = EXT[kind] || 'jpg';
-  let name = `${base}-compressed.${ext}`;
+  let name = `${base}-squeezed.${ext}`;
   let n = 2;
-  while (usedNames.has(name)) name = `${base}-compressed-${n++}.${ext}`;
+  while (usedNames.has(name)) name = `${base}-squeezed-${n++}.${ext}`;
   usedNames.add(name);
   return name;
 }
@@ -593,7 +593,7 @@ zipBtn.addEventListener('click', async () => {
   try {
     const files = [];
     for (const i of done) files.push({ name: i.result.name, data: new Uint8Array(await i.result.blob.arrayBuffer()) });
-    download(makeZip(files), 'compressed-images.zip');
+    download(makeZip(files), 'squeezed-images.zip');
   } finally {
     refresh();
   }
