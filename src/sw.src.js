@@ -35,9 +35,9 @@ async function receiveShare(request) {
     const cache = await caches.open(SHARE_CACHE);
     for (const key of await cache.keys()) await cache.delete(key);
     await Promise.all(
-      files.slice(0, 5).map((file, i) =>
+      files.slice(0, 25).map((file, i) =>
         cache.put(
-          new Request(`shared-${i}`),
+          new Request(`shared-${String(i).padStart(2, '0')}`),
           new Response(file, {
             headers: {
               'Content-Type': file.type || 'application/octet-stream',
