@@ -243,7 +243,18 @@ async function fitToTarget(encodeAt, target) {
 
 // ---------- job ----------
 
-async function compress({ buffer, maxWidth, format, quality, target }) {
+// The cap applies to the width, or with fit 'edge' to whichever side is longer.
+// Never enlarges.
+function fitSize(w, h, max, fit) {
+  const scale = Math.min(1, max / (fit === 'edge' ? Math.max(w, h) : w));
+  if (scale === 1) return { width: w, height: h };
+  return {
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+  };
+}
+
+async function compress({ buffer, maxWidth, fit, format, quality, target }) {
   const bytes = new Uint8Array(buffer);
   const kind = sniff(bytes);
   if (!kind) throw new Error('This file is not a supported image.');
@@ -258,9 +269,8 @@ async function compress({ buffer, maxWidth, format, quality, target }) {
 
   const origWidth = bitmap.width;
   const origHeight = bitmap.height;
-  const width = Math.min(origWidth, maxWidth);
-  const height = Math.max(1, Math.round((origHeight * width) / origWidth));
-  const resized = width !== origWidth;
+  const { width, height } = fitSize(origWidth, origHeight, maxWidth, fit);
+  const resized = width !== origWidth || height !== origHeight;
 
   let scaled;
   try {

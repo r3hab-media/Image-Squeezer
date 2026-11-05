@@ -1,7 +1,8 @@
 import { makeZip } from './zip.js';
 import './theme.js';
+import './share.js';
 
-const MAX_FILES = 5;
+const MAX_FILES = 25;
 const MAX_BYTES = 60 * 1024 * 1024;
 const POOL_SIZE = Math.max(1, Math.min(2, navigator.hardwareConcurrency || 2));
 const EXT = { jpeg: 'jpg', png: 'png', webp: 'webp' };
@@ -10,6 +11,8 @@ const $ = (id) => document.getElementById(id);
 const drop = $('drop');
 const picker = $('picker');
 const maxw = $('maxw');
+const fitInputs = [...document.querySelectorAll('input[name="fit"]')];
+const fitHint = $('fit-hint');
 const formatInputs = [...document.querySelectorAll('input[name="format"]')];
 const formatHint = $('format-hint');
 const quality = $('quality');
@@ -24,6 +27,7 @@ const batchState = $('batch-state');
 const list = $('list');
 const zipBtn = $('zip');
 const clearBtn = $('clear');
+const rerunBtn = $('rerun');
 const installBtn = $('install');
 const compareDlg = $('compare');
 const compareFrame = $('compare-frame');
@@ -43,6 +47,8 @@ let nextId = 1;
 try {
   const saved = Number(localStorage.getItem('maxWidth'));
   if (saved >= 100 && saved <= 10000) maxw.value = saved;
+  const savedFit = fitInputs.find((i) => i.value === localStorage.getItem('fit'));
+  if (savedFit) savedFit.checked = true;
   const savedFormat = localStorage.getItem('format');
   const savedInput = formatInputs.find((i) => i.value === savedFormat);
   if (savedInput) savedInput.checked = true;
@@ -106,10 +112,21 @@ function readMaxWidth() {
   return v;
 }
 
+function readFit() {
+  const v = (fitInputs.find((i) => i.checked) || fitInputs[0]).value;
+  fitHint.textContent = v === 'edge'
+    ? 'Caps the longest side, so tall photos shrink too. Smaller images are never enlarged.'
+    : 'Caps the width. Smaller images are never enlarged.';
+  try { localStorage.setItem('fit', v); } catch {}
+  return v;
+}
+
 maxw.addEventListener('change', readMaxWidth);
+for (const input of fitInputs) input.addEventListener('change', readFit);
 for (const input of formatInputs) input.addEventListener('change', readFormat);
 quality.addEventListener('input', readQuality);
 target.addEventListener('change', readTarget);
+readFit();
 readFormat();
 readQuality();
 
@@ -128,9 +145,9 @@ function say(text) {
 function outputName(original, kind) {
   const base = original.replace(/\.[^.]*$/, '') || 'image';
   const ext = EXT[kind] || 'jpg';
-  let name = `${base}-compressed.${ext}`;
+  let name = `${base}-squeezed.${ext}`;
   let n = 2;
-  while (usedNames.has(name)) name = `${base}-compressed-${n++}.${ext}`;
+  while (usedNames.has(name)) name = `${base}-squeezed-${n++}.${ext}`;
   usedNames.add(name);
   return name;
 }
@@ -186,6 +203,7 @@ async function run(slot, item) {
         id: item.id,
         buffer,
         maxWidth: item.maxWidth,
+        fit: item.fit,
         format: item.format,
         quality: item.quality,
         target: item.target,
@@ -388,9 +406,9 @@ function describe(r) {
   const dims = `${r.width} \u00d7 ${r.height} px`;
   if (r.note === 'target') return `Met the ${fmtBytes(r.target)} target. ${dims}`;
   if (r.note === 'target-missed') return `As small as it goes, still over ${fmtBytes(r.target)}. ${dims}`;
-  if (r.note === 'resized') return `Resized from ${r.origWidth} px wide. ${dims}`;
+  if (r.note === 'resized') return `Resized from ${r.origWidth} \u00d7 ${r.origHeight} px. ${dims}`;
   if (r.note === 'converted') return `Converted from ${r.from.toUpperCase()} to ${EXT[r.kind].toUpperCase()}. ${dims}`;
-  if (r.note === 'kept') return `Already compressed, original kept. ${dims}`;
+  if (r.note === 'kept') return `Already compressed, original kept with its metadata. ${dims}`;
   return dims;
 }
 
@@ -453,6 +471,7 @@ function succeed(item, data) {
     width: data.width,
     height: data.height,
     origWidth: data.origWidth,
+    origHeight: data.origHeight,
   };
   setStatus(item, 'done');
 }
@@ -489,28 +508,52 @@ function addFiles(fileList) {
   const skipped = files.length - accepted.length;
   say(skipped ? `The limit is ${MAX_FILES} images at a time. ${skipped} ${skipped === 1 ? 'file was' : 'files were'} skipped.` : '');
 
-  const maxWidth = readMaxWidth();
-  const outFormat = readFormat();
-  const outQuality = readQuality();
-  const outTarget = readTarget();
+  const settings = readSettings();
   for (const file of accepted) {
-    const item = {
-      id: nextId++,
-      file,
-      status: 'queued',
-      maxWidth,
-      format: outFormat,
-      quality: outQuality,
-      target: outTarget,
-    };
+    const item = { id: nextId++, file, status: 'queued', ...settings };
     items.push(item);
     addRow(item);
     if (file.size > MAX_BYTES) {
+      item.tooBig = true;
       fail(item, `This file is over ${MAX_BYTES / 1024 / 1024} MB, which is too large to process here.`);
     } else {
       queue.push(item);
     }
   }
+  refresh();
+  pump();
+}
+
+function readSettings() {
+  return {
+    maxWidth: readMaxWidth(),
+    fit: readFit(),
+    format: readFormat(),
+    quality: readQuality(),
+    target: readTarget(),
+  };
+}
+
+// Runs the whole batch again with whatever the settings say now.
+function rerunAll() {
+  const settings = readSettings();
+  let count = 0;
+  for (const item of items) {
+    if (item.tooBig) continue;
+    if (item.result) {
+      URL.revokeObjectURL(item.result.url);
+      usedNames.delete(item.result.name);
+      item.result = null;
+    }
+    Object.assign(item, settings);
+    // A fresh id makes any stray reply from an earlier run get ignored.
+    item.id = nextId++;
+    item.status = 'queued';
+    render(item);
+    queue.push(item);
+    count++;
+  }
+  say(count ? '' : 'Nothing to re-squeeze.');
   refresh();
   pump();
 }
@@ -522,6 +565,7 @@ function refresh() {
   const done = items.filter((i) => i.status === 'done');
   const busy = items.some((i) => i.status === 'queued' || i.status === 'working');
   zipBtn.disabled = busy || done.length === 0;
+  rerunBtn.disabled = busy || !items.some((i) => !i.tooBig);
 
   const before = done.reduce((n, i) => n + i.file.size, 0);
   const after = done.reduce((n, i) => n + i.result.blob.size, 0);
@@ -549,11 +593,13 @@ zipBtn.addEventListener('click', async () => {
   try {
     const files = [];
     for (const i of done) files.push({ name: i.result.name, data: new Uint8Array(await i.result.blob.arrayBuffer()) });
-    download(makeZip(files), 'compressed-images.zip');
+    download(makeZip(files), 'squeezed-images.zip');
   } finally {
     refresh();
   }
 });
+
+rerunBtn.addEventListener('click', rerunAll);
 
 clearBtn.addEventListener('click', () => {
   for (const item of items.splice(0)) {
@@ -601,6 +647,39 @@ window.addEventListener('paste', (e) => {
   if (e.clipboardData && e.clipboardData.files.length) addFiles(e.clipboardData.files);
 });
 
+// ---------- features dialog ----------
+
+const featuresDlg = $('features-dlg');
+
+function openFeatures() {
+  if (featuresDlg.open) return;
+  featuresDlg.showModal();
+  // Otherwise the browser focuses the button at the bottom and scrolls past the list on phones.
+  $('features-title').focus();
+}
+
+$('features-open').addEventListener('click', openFeatures);
+$('features-close').addEventListener('click', () => featuresDlg.close());
+featuresDlg.addEventListener('click', (e) => {
+  if (e.target === featuresDlg) featuresDlg.close();
+});
+
+// Shown once, on a first visit in a browser tab. Not when the installed app opens, and not when
+// files arrive from the share sheet or the file manager, since those people came to work.
+function firstVisitFeatures() {
+  if (new URL(location.href).searchParams.has('shared')) return;
+  if (matchMedia('(display-mode: standalone)').matches) return;
+  try {
+    if (localStorage.getItem('seenFeatures')) return;
+    localStorage.setItem('seenFeatures', '1');
+  } catch {
+    return; // Without storage it would pop up on every visit.
+  }
+  openFeatures();
+}
+
+firstVisitFeatures();
+
 // ---------- shared files ----------
 
 // Picks up anything the service worker parked for us after a share sheet POST.
@@ -639,7 +718,10 @@ if ('launchQueue' in window && 'LaunchParams' in window && 'files' in LaunchPara
         files.push(await handle.getFile());
       } catch {}
     }
-    if (files.length) addFiles(files);
+    if (files.length) {
+      if (featuresDlg.open) featuresDlg.close();
+      addFiles(files);
+    }
   });
 }
 

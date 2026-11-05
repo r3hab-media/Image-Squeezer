@@ -36,6 +36,7 @@ const PRECACHE_FILES = [
   'css/style.css',
   'js/app.js',
   'js/theme.js',
+  'js/share.js',
   'js/zip.js',
   'js/crc32.js',
   'js/worker.js',
